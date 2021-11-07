@@ -87,3 +87,92 @@ assert((ch == 'Y') || (ch == 'N'))
 わかんねえのでt-wadaのスライド召喚！！[デデーン](https://speakerdeck.com/twada/php-conference-2016?slide=68)
 
 ## 26　リソースのバランス方法
+コーディングの際はリソースの管理を必ず行う。始めたら終わらせる。
+
+```Ruby
+def read_customer
+    @customer_file = File.open(@name + ".rec", "r+")
+    @balance = BigDecimal(@customer_file.gets)
+end
+
+def write_customer
+    @customer_file.rewind
+    @customer_file.puts @balance.to_s
+    @customer_file.close
+end
+
+# もとのバージョン
+def update_customer(transaction_amount)
+    read_customer
+    @balance = @balance.add(transaction_amount, 2)
+    write_customer
+end
+
+# 悪い変更。write_customerが呼び出されずにcloseしないケースがある。
+def update_customer(transaction_amount)
+    read_customer
+    if (transaction_amount >= 0.00)
+        @balance = @balance.add(transaction_amount, 2)
+        write_customer
+    end
+end
+```
+
+上記のコードを変更する場合、特殊なケースを扱うような変更をしてはならない。問題自体は修正されるが、コードの状態の管理などが面倒になり、コードの質が低下することになる。変えるなら以下のように変える。
+
+```Ruby
+def read_customer(file)
+    @balance = BigDecimal(file.gets)
+end
+
+def write_customer(file)
+    file.rewind
+    file.puts @balance.to_s
+end
+
+def update_customer(transaction_amount)
+    file = File.open(@name + ".rec", "r")
+    read_customer(file)
+    @balance = @balance.add(transaction_amount, 2)
+    write_customer(file)
+    file.close
+end
+```
+
+ファイル参照が保持されるのではなく、パラメーターとして扱われるため、ファイル操作が集約されている。
+また、以下のように局所的に変数のスコープを制限することも可能。自動的にリソースが開放される。
+
+```Ruby
+def update_customer(transaction_amount)
+    file = File.open(@name + ".rec", "r") do |file|
+        read_customer(file)
+        @balance = @balance.add(transaction_amount, 2)
+        write_customer(file)
+        # file.close ←クローズしなくて良い。
+    end
+end
+```
+
+### 割当のネスト
+* リソースは割り当てた順に開放。
+* コードの異なる箇所で同じリソースの組を割り当てるなら、同じ順で。（デッドロック回避）
+
+### 例外
+* オブジェクト指向では、特定のリソースが必要になるたびにオブジェクトを生成・デストラクターでスコープから除外を繰り返す。
+* 例外処理が行われる前にリソースを開放する。
+  * 変数のスコープ
+  * try, catch, finallyを使って、finallyでクリーンアップ
+
+### リソースをバランスさせられない時
+あるルーチンで割り当てたメモリ領域を、当分使用する大きな構造にリンクさせる場合がそれにあたる。そこでは、メモリー割当に対するセマンティック不変性を確立する。誰が構造中のデータに対して責任を持つのかを決定しておく。
+たとえばトップレベルの構造を開放した際は、以下のことが起こると考えられる。
+* トップレベルの構造は自らが保持している部分構造の開放について責任を持ち、順次再帰的に開放を行っていく。
+* トップレベルの構造のみを開放する。トップレベルの構造が保持する構造は参照されなくなるが、存在しているので孤児となる。
+* トップレベルの構造は保持する構造がある限り開放を拒否する。
+
+リソースが開放されているかを確認するコードを書くのもよい。
+
+### チャレンジ
+本書では主要なデータ構造に対するセマンティック不変表明を確立してメモリーの解放指針を規定した。DbCをどのように活用すれば、このアイディアを磨けるか。
+
+# 27　ヘッドライトを追い越そうとしない
